@@ -2,3 +2,7 @@ ultralytics
 opencv-python
 openpyxl
 requests
+easyocr
+Pillow
+torch
+torchvision

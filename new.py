@@ -52,6 +52,11 @@ try:
 except Exception:
     openpyxl = None
 
+try:
+    import easyocr
+except Exception:
+    easyocr = None
+
 
 # Vehicle priority classification
 VEHICLE_PRIORITY = {
@@ -95,16 +100,33 @@ class ESP32CamDetector:
 
         self.cap = None
         self.model = None
+        self.ocr_reader = None
         self.running = False
-        self.log = deque()  # store (timestamp_iso, label, priority)
+        self.log = deque()  # store (timestamp_iso, label, priority, license_plate)
         self.frame = None
         self.current_priority = 'NONE'  # Track highest priority vehicle detected
+        self.plate_cache = {}  # Cache to avoid reading same plate multiple times
+        self.plate_cache_timeout = 3  # seconds
 
     def load_model(self):
         if YOLO is None:
             raise RuntimeError("Ultralytics YOLO not available. Install with: pip install ultralytics")
         # use small model for speed
         self.model = YOLO("yolov8n.pt")
+        
+        # Initialize EasyOCR for license plate recognition
+        if easyocr is not None:
+            print("Loading EasyOCR for license plate recognition (this may take a minute)...")
+            try:
+                self.ocr_reader = easyocr.Reader(['en'], gpu=False)  # Set gpu=True if CUDA available
+                print("EasyOCR loaded successfully!")
+            except Exception as e:
+                print(f"Warning: Could not load EasyOCR: {e}")
+                print("License plate recognition will be disabled.")
+                self.ocr_reader = None
+        else:
+            print("EasyOCR not installed. License plate recognition disabled.")
+            print("Install with: pip install easyocr")
 
     def start_capture(self):
         if self.use_video:
@@ -135,6 +157,128 @@ class ESP32CamDetector:
         
         # Default: not a vehicle or unknown
         return None
+    
+    def preprocess_plate_roi(self, plate_roi):
+        """Preprocess image region for better OCR accuracy"""
+        try:
+            # Convert to grayscale
+            gray = cv2.cvtColor(plate_roi, cv2.COLOR_BGR2GRAY)
+            
+            # Apply bilateral filter to reduce noise
+            denoised = cv2.bilateralFilter(gray, 11, 17, 17)
+            
+            # Apply adaptive thresholding
+            thresh = cv2.adaptiveThreshold(
+                denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY, 11, 2
+            )
+            
+            # Resize if too small (minimum height 50px for better OCR)
+            height, width = thresh.shape
+            if height < 50:
+                scale = 50 / height
+                new_width = int(width * scale)
+                thresh = cv2.resize(thresh, (new_width, 50), interpolation=cv2.INTER_CUBIC)
+            
+            return thresh
+        except Exception as e:
+            return plate_roi
+    
+    def detect_license_plate(self, frame, x1, y1, x2, y2, vehicle_id):
+        """
+        Detect and read license plate from vehicle region
+        
+        Args:
+            frame: Full video frame
+            x1, y1, x2, y2: Bounding box coordinates of detected vehicle
+            vehicle_id: Unique identifier for caching purposes
+            
+        Returns:
+            License plate text or None
+        """
+        if self.ocr_reader is None:
+            return None
+        
+        # Check cache first (avoid re-reading same plate)
+        current_time = time.time()
+        if vehicle_id in self.plate_cache:
+            cached_plate, cached_time = self.plate_cache[vehicle_id]
+            if current_time - cached_time < self.plate_cache_timeout:
+                return cached_plate
+        
+        try:
+            # Extract vehicle region with some padding
+            height, width = frame.shape[:2]
+            pad = 10
+            y1_pad = max(0, y1 - pad)
+            y2_pad = min(height, y2 + pad)
+            x1_pad = max(0, x1 - pad)
+            x2_pad = min(width, x2 + pad)
+            
+            vehicle_roi = frame[y1_pad:y2_pad, x1_pad:x2_pad]
+            
+            if vehicle_roi.size == 0 or vehicle_roi.shape[0] < 20 or vehicle_roi.shape[1] < 20:
+                return None
+            
+            # Focus on lower 40% of vehicle (where plates typically are)
+            roi_height = vehicle_roi.shape[0]
+            lower_region = vehicle_roi[int(roi_height * 0.6):, :]
+            
+            if lower_region.size == 0:
+                lower_region = vehicle_roi
+            
+            # Preprocess the image
+            processed = self.preprocess_plate_roi(lower_region)
+            
+            # Perform OCR
+            results = self.ocr_reader.readtext(processed, detail=1, paragraph=False)
+            
+            if not results:
+                return None
+            
+            # Filter and clean results
+            best_plate = None
+            best_confidence = 0
+            
+            for (bbox, text, confidence) in results:
+                # Lower confidence threshold and more lenient validation
+                if confidence > 0.3:  # Lowered from 0.4
+                    # Clean the text (remove spaces, special chars except hyphens)
+                    cleaned_text = ''.join(c for c in text if c.isalnum() or c == '-')
+                    
+                    # More lenient: 3-12 chars, can be all numbers or all letters
+                    if 3 <= len(cleaned_text) <= 12:
+                        # Accept if it has numbers OR letters (not necessarily both)
+                        has_letter = any(c.isalpha() for c in cleaned_text)
+                        has_number = any(c.isdigit() for c in cleaned_text)
+                        
+                        # Accept any text with letters or numbers
+                        if (has_letter or has_number) and confidence > best_confidence:
+                            best_plate = cleaned_text.upper()
+                            best_confidence = confidence
+                            # Debug output
+                            print(f"🔍 Detected plate: {best_plate} (confidence: {confidence:.2f})")
+            
+            # Cache the result
+            if best_plate:
+                self.plate_cache[vehicle_id] = (best_plate, current_time)
+            
+            return best_plate
+            
+        except Exception as e:
+            # Print errors for debugging
+            print(f"⚠️ OCR error: {e}")
+            return None
+    
+    def clean_old_cache(self):
+        """Remove old entries from plate cache"""
+        current_time = time.time()
+        expired_keys = [
+            key for key, (_, timestamp) in self.plate_cache.items()
+            if current_time - timestamp > self.plate_cache_timeout
+        ]
+        for key in expired_keys:
+            del self.plate_cache[key]
     
     def send_led_command(self, priority):
         """Send LED control command to ESP32"""
@@ -180,6 +324,10 @@ class ESP32CamDetector:
 
             # Detect vehicles on this frame
             if frame_count % detection_interval == 0:
+                # Clean old cache entries periodically
+                if frame_count % 30 == 0:
+                    self.clean_old_cache()
+                
                 try:
                     results = self.model(frame)
                 except Exception as e:
@@ -195,7 +343,7 @@ class ESP32CamDetector:
                     boxes = r.boxes
                     if boxes is None:
                         continue
-                    for box in boxes:
+                    for idx, box in enumerate(boxes):
                         xyxy = box.xyxy[0].cpu().numpy() if hasattr(box.xyxy[0], 'cpu') else box.xyxy[0].numpy()
                         x1, y1, x2, y2 = map(int, xyxy[:4])
                         conf = float(box.conf[0]) if hasattr(box, 'conf') and len(box.conf) else 0.0
@@ -208,6 +356,14 @@ class ESP32CamDetector:
                         if priority:  # Only process if it's a vehicle
                             frame_priorities.append(priority)
                             
+                            # Try to detect license plate
+                            vehicle_id = f"{x1}_{y1}_{x2}_{y2}"  # Simple ID based on position
+                            license_plate = self.detect_license_plate(frame, x1, y1, x2, y2, vehicle_id)
+                            
+                            # Debug: Show when we're processing
+                            if license_plate:
+                                print(f"✅ Vehicle: {name}, Plate: {license_plate}")
+                            
                             # Choose color based on priority
                             if priority == 'HIGH':
                                 color = (0, 0, 255)  # Red for high priority
@@ -219,17 +375,20 @@ class ESP32CamDetector:
                             # Draw bounding box
                             cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
                             
-                            # Create label with priority
-                            label = f"{name} {conf:.2f} [{priority}]"
+                            # Create label with priority and license plate
+                            if license_plate:
+                                label = f"{name} {conf:.2f} [{priority}] | Plate: {license_plate}"
+                            else:
+                                label = f"{name} {conf:.2f} [{priority}]"
                             
-                            # Draw label background
+                            # Draw label background with better visibility
                             (label_w, label_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-                            cv2.rectangle(annotated, (x1, y1 - label_h - 10), (x1 + label_w, y1), color, -1)
-                            cv2.putText(annotated, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                            cv2.rectangle(annotated, (x1, y1 - label_h - 12), (x1 + label_w + 10, y1), color, -1)
+                            cv2.putText(annotated, label, (x1 + 5, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
-                            # Log detection
+                            # Log detection with license plate
                             ts = datetime.now().isoformat(sep=' ', timespec='seconds')
-                            self.log.append((ts, name, priority))
+                            self.log.append((ts, name, priority, license_plate if license_plate else "N/A"))
                 
                 # Determine highest priority and send LED command
                 if frame_priorities:
@@ -288,9 +447,9 @@ class ESP32CamDetector:
         wb = Workbook()
         ws = wb.active
         ws.title = "Vehicle Detections"
-        ws.append(("Timestamp", "Vehicle Type", "Priority"))
-        for ts, label, priority in list(self.log):
-            ws.append((ts, label, priority))
+        ws.append(("Timestamp", "Vehicle Type", "Priority", "License Plate"))
+        for ts, label, priority, plate in list(self.log):
+            ws.append((ts, label, priority, plate))
         wb.save(filename)
         return filename
 

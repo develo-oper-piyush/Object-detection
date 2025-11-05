@@ -86,10 +86,11 @@ LED_COLORS = {
 
 
 class ESP32CamDetector:
-    def __init__(self, esp_ip=None, stream_path="/stream", video_path=None):
+    def __init__(self, esp_ip=None, stream_path="/stream", video_path=None, process_scale=1.0):
         self.esp_ip = esp_ip
         self.video_path = video_path
         self.use_video = video_path is not None
+        self.process_scale = process_scale  # Scale factor for processing (0.5 = half size for 4x speed)
         
         if esp_ip and esp_ip.startswith("http"):
             self.stream_url = esp_ip
@@ -107,6 +108,8 @@ class ESP32CamDetector:
         self.current_priority = 'NONE'  # Track highest priority vehicle detected
         self.plate_cache = {}  # Cache to avoid reading same plate multiple times
         self.plate_cache_timeout = 3  # seconds
+        self.last_annotated = None  # Store last annotated frame to prevent blinking
+        self.max_vehicles = 5  # Only track 5 nearest vehicles
 
     def load_model(self):
         if YOLO is None:
@@ -304,7 +307,20 @@ class ESP32CamDetector:
         print(f"Starting vehicle detection from {source_type}. Press 'q' in the video window to quit.")
         
         frame_count = 0
-        detection_interval = 1  # Process every frame for better detection
+        detection_interval = 3  # Process every 3rd frame for better performance
+        ocr_interval = 15  # Only run OCR every 15th frame (OCR is slow!)
+        
+        # Calculate proper wait time for video playback
+        if self.use_video:
+            fps = self.cap.get(cv2.CAP_PROP_FPS)
+            if fps == 0 or fps > 120:  # Invalid FPS
+                fps = 30  # Default to 30 FPS
+            wait_time = int(1000 / fps)  # milliseconds per frame
+        else:
+            wait_time = 1  # For live stream, process as fast as possible
+        
+        print(f"Video FPS: {fps if self.use_video else 'N/A'}, Wait time: {wait_time}ms")
+        print(f"Tracking max {self.max_vehicles} nearest vehicles for better performance")
         
         while self.running:
             ret, frame = self.cap.read()
@@ -321,6 +337,15 @@ class ESP32CamDetector:
             
             self.frame = frame
             frame_count += 1
+            
+            # Resize frame for faster processing if scale < 1.0
+            if self.process_scale < 1.0:
+                process_frame = cv2.resize(frame, None, fx=self.process_scale, fy=self.process_scale, 
+                                          interpolation=cv2.INTER_LINEAR)
+                scale_factor = 1.0 / self.process_scale
+            else:
+                process_frame = frame
+                scale_factor = 1.0
 
             # Detect vehicles on this frame
             if frame_count % detection_interval == 0:
@@ -329,7 +354,7 @@ class ESP32CamDetector:
                     self.clean_old_cache()
                 
                 try:
-                    results = self.model(frame)
+                    results = self.model(process_frame)
                 except Exception as e:
                     print("Detection error:", e)
                     time.sleep(0.5)
@@ -338,6 +363,12 @@ class ESP32CamDetector:
                 annotated = frame.copy()
                 frame_priorities = []  # Track all priorities detected in this frame
                 
+                # Determine if we should run OCR this frame (only every Nth frame)
+                run_ocr = (frame_count % ocr_interval == 0)
+                
+                # Collect all vehicle detections first
+                vehicle_detections = []
+                
                 # Process detection results
                 for r in results:
                     boxes = r.boxes
@@ -345,7 +376,8 @@ class ESP32CamDetector:
                         continue
                     for idx, box in enumerate(boxes):
                         xyxy = box.xyxy[0].cpu().numpy() if hasattr(box.xyxy[0], 'cpu') else box.xyxy[0].numpy()
-                        x1, y1, x2, y2 = map(int, xyxy[:4])
+                        # Scale coordinates back to original frame size
+                        x1, y1, x2, y2 = map(int, xyxy[:4] * scale_factor)
                         conf = float(box.conf[0]) if hasattr(box, 'conf') and len(box.conf) else 0.0
                         cls = int(box.cls[0]) if hasattr(box, 'cls') and len(box.cls) else None
                         name = r.names[cls] if (cls is not None and r.names is not None and cls in r.names) else str(cls)
@@ -354,41 +386,66 @@ class ESP32CamDetector:
                         priority = self.classify_vehicle_priority(name)
                         
                         if priority:  # Only process if it's a vehicle
-                            frame_priorities.append(priority)
+                            # Calculate distance from bottom center (nearer = larger y2 value)
+                            frame_height = frame.shape[0]
+                            distance = frame_height - y2  # Lower distance = closer to camera
                             
-                            # Try to detect license plate
-                            vehicle_id = f"{x1}_{y1}_{x2}_{y2}"  # Simple ID based on position
-                            license_plate = self.detect_license_plate(frame, x1, y1, x2, y2, vehicle_id)
-                            
-                            # Debug: Show when we're processing
-                            if license_plate:
-                                print(f"✅ Vehicle: {name}, Plate: {license_plate}")
-                            
-                            # Choose color based on priority
-                            if priority == 'HIGH':
-                                color = (0, 0, 255)  # Red for high priority
-                            elif priority == 'MEDIUM':
-                                color = (0, 165, 255)  # Orange/Yellow for medium priority
-                            else:  # LOW
-                                color = (0, 255, 0)  # Green for low priority
-                            
-                            # Draw bounding box
-                            cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
-                            
-                            # Create label with priority and license plate
-                            if license_plate:
-                                label = f"{name} {conf:.2f} [{priority}] | Plate: {license_plate}"
-                            else:
-                                label = f"{name} {conf:.2f} [{priority}]"
-                            
-                            # Draw label background with better visibility
-                            (label_w, label_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-                            cv2.rectangle(annotated, (x1, y1 - label_h - 12), (x1 + label_w + 10, y1), color, -1)
-                            cv2.putText(annotated, label, (x1 + 5, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                            vehicle_detections.append({
+                                'bbox': (x1, y1, x2, y2),
+                                'conf': conf,
+                                'name': name,
+                                'priority': priority,
+                                'distance': distance
+                            })
+                
+                # Sort by distance and keep only the 5 nearest vehicles
+                vehicle_detections.sort(key=lambda v: v['distance'])
+                nearest_vehicles = vehicle_detections[:self.max_vehicles]
+                
+                # Now draw only the nearest vehicles
+                for vehicle in nearest_vehicles:
+                    x1, y1, x2, y2 = vehicle['bbox']
+                    conf = vehicle['conf']
+                    name = vehicle['name']
+                    priority = vehicle['priority']
+                    
+                    frame_priorities.append(priority)
+                    
+                    # Try to detect license plate (only on OCR frames to improve performance)
+                    license_plate = None
+                    if run_ocr:
+                        vehicle_id = f"{x1}_{y1}_{x2}_{y2}"  # Simple ID based on position
+                        license_plate = self.detect_license_plate(frame, x1, y1, x2, y2, vehicle_id)
+                        
+                        # Debug: Show when we're processing
+                        if license_plate:
+                            print(f"✅ Vehicle: {name}, Plate: {license_plate}")
+                    
+                    # Choose color based on priority
+                    if priority == 'HIGH':
+                        color = (0, 0, 255)  # Red for high priority
+                    elif priority == 'MEDIUM':
+                        color = (0, 165, 255)  # Orange/Yellow for medium priority
+                    else:  # LOW
+                        color = (0, 255, 0)  # Green for low priority
+                    
+                    # Draw bounding box
+                    cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
+                    
+                    # Create label with priority and license plate
+                    if license_plate:
+                        label = f"{name} {conf:.2f} [{priority}] | Plate: {license_plate}"
+                    else:
+                        label = f"{name} {conf:.2f} [{priority}]"
+                    
+                    # Draw label background with better visibility
+                    (label_w, label_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                    cv2.rectangle(annotated, (x1, y1 - label_h - 12), (x1 + label_w + 10, y1), color, -1)
+                    cv2.putText(annotated, label, (x1 + 5, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
-                            # Log detection with license plate
-                            ts = datetime.now().isoformat(sep=' ', timespec='seconds')
-                            self.log.append((ts, name, priority, license_plate if license_plate else "N/A"))
+                    # Log detection with license plate
+                    ts = datetime.now().isoformat(sep=' ', timespec='seconds')
+                    self.log.append((ts, name, priority, license_plate if license_plate else "N/A"))
                 
                 # Determine highest priority and send LED command
                 if frame_priorities:
@@ -410,19 +467,31 @@ class ESP32CamDetector:
                         self.send_led_command('NONE')
                 
                 # Display current priority status
-                status_text = f"Current Priority: {self.current_priority}"
-                cv2.putText(annotated, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-                cv2.putText(annotated, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 1)
+                status_text = f"Current Priority: {self.current_priority} | Tracking: {len(nearest_vehicles)}/{self.max_vehicles} vehicles"
+                cv2.putText(annotated, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+                cv2.putText(annotated, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 1)
 
+                # Store this annotated frame to prevent blinking
+                self.last_annotated = annotated.copy()
                 cv2.imshow("ESP32-CAM Vehicle Detection & Priority Classification", annotated)
             else:
-                # Just show the frame without processing
-                cv2.imshow("ESP32-CAM Vehicle Detection & Priority Classification", frame)
+                # Show last annotated frame instead of raw frame to prevent blinking
+                if self.last_annotated is not None:
+                    cv2.imshow("ESP32-CAM Vehicle Detection & Priority Classification", self.last_annotated)
+                else:
+                    cv2.imshow("ESP32-CAM Vehicle Detection & Priority Classification", frame)
             
-            key = cv2.waitKey(1) & 0xFF
+            key = cv2.waitKey(wait_time) & 0xFF
             if key == ord('q'):
                 self.stop()
                 break
+            elif key == ord('e'):
+                # Export Excel on 'e' key press
+                try:
+                    filename = self.export_excel()
+                    print(f"✅ Excel exported: {filename}")
+                except Exception as e:
+                    print(f"❌ Export failed: {e}")
 
         self.cleanup()
 
@@ -485,6 +554,7 @@ def main():
     parser.add_argument("--ip", help="ESP32-CAM IP address or full stream URL (e.g. 192.168.1.50 or http://192.168.1.50/stream)")
     parser.add_argument("--stream-path", default="/stream", help="stream path used by ESP sketch (default /stream)")
     parser.add_argument("--video", help="Path to video file for offline processing (alternative to --ip)")
+    parser.add_argument("--scale", type=float, default=0.75, help="Processing scale factor (0.5-1.0, lower=faster, default=0.75)")
     args = parser.parse_args()
 
     # Validate input
@@ -492,12 +562,20 @@ def main():
         print("Error: Must provide either --ip for ESP32-CAM stream or --video for video file")
         parser.print_help()
         sys.exit(1)
+    
+    # Validate scale
+    if args.scale <= 0 or args.scale > 1.0:
+        print("Warning: Scale must be between 0.1 and 1.0. Using default 0.75")
+        args.scale = 0.75
 
     detector = ESP32CamDetector(
         esp_ip=args.ip,
         stream_path=args.stream_path,
-        video_path=args.video
+        video_path=args.video,
+        process_scale=args.scale
     )
+    
+    print(f"Processing at {args.scale*100:.0f}% resolution for better performance")
 
     # start tkinter UI in separate thread
     ui_thread = threading.Thread(target=start_tkinter_ui, args=(detector,), daemon=True)

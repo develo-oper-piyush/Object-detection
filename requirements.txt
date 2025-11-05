@@ -6,3 +6,5 @@ easyocr
 Pillow
 torch
 torchvision
+flask
+flask-cors

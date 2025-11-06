@@ -1,11 +1,13 @@
 # 📷 Real-Time Object Detection System
 
-An advanced real-time object detection system powered by YOLOv8, featuring specialized implementations for vehicle detection with priority classification, pedestrian tracking, and license plate recognition using EasyOCR.
+An advanced real-time object detection system powered by YOLOv8, featuring **TWO powerful modes**: **Vehicle Detection** with priority classification and **General Object Detection** (80+ everyday objects), plus pedestrian tracking and license plate recognition.
 
 [![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://python.org)
 [![YOLOv8](https://img.shields.io/badge/YOLO-v8-green.svg)](https://github.com/ultralytics/ultralytics)
 [![OpenCV](https://img.shields.io/badge/OpenCV-4.0+-red.svg)](https://opencv.org)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+> 🎉 **NEW!** General Object Detection Mode - Detect 80+ everyday objects (people, animals, furniture, electronics, food, and more!)
 
 ---
 
@@ -29,25 +31,44 @@ An advanced real-time object detection system powered by YOLOv8, featuring speci
 
 ## 🎯 Project Overview
 
-This is a **versatile object detection system** built on YOLOv8, designed to detect and classify various objects in real-time. The project showcases its capabilities through a comprehensive **vehicle detection and traffic management application**.
+This is a **versatile object detection system** built on YOLOv8, offering **two powerful detection modes** to suit different use cases.
+
+### 🚗 Mode 1: Vehicle Detection (Traffic Management)
+
+The default mode provides specialized vehicle detection and traffic management:
+
+-   Multi-class vehicle detection and classification
+-   Emergency vehicle priority identification (HIGH/MEDIUM/LOW)
+-   Pedestrian detection and counting
+-   Automatic license plate recognition (OCR)
+-   ESP32-CAM LED control based on priority
+-   Real-time analytics and data logging
+
+**Use Cases:** Traffic monitoring, parking management, toll booths, emergency vehicle priority systems
+
+### 🎯 Mode 2: General Object Detection (NEW! 80+ Classes)
+
+Detect everyday objects from the COCO dataset:
+
+-   **People & Animals**: person, dog, cat, bird, horse, cow, elephant, bear, zebra, giraffe, sheep
+-   **Vehicles**: car, truck, bus, motorcycle, bicycle, train, airplane, boat
+-   **Furniture**: chair, couch, bed, dining table, potted plant, toilet
+-   **Electronics**: tv, laptop, mouse, keyboard, cell phone, microwave, oven, refrigerator
+-   **Food**: bottle, cup, bowl, banana, apple, pizza, donut, cake, sandwich, hot dog
+-   **Sports**: sports ball, frisbee, skateboard, surfboard, tennis racket, baseball bat
+-   **Accessories**: backpack, umbrella, handbag, tie, suitcase, book, clock, vase
+-   **And 50+ more objects!**
+
+**Use Cases:** Retail analytics, home security, office monitoring, wildlife research, safety compliance
 
 ### Core Technology
 
 -   **YOLOv8** (You Only Look Once) - State-of-the-art object detection
--   **EasyOCR** - Optical Character Recognition for text extraction
+-   **COCO Dataset** - Pre-trained on 80 object classes (no training needed!)
+-   **EasyOCR** - Optical Character Recognition for license plates
 -   **OpenCV** - Real-time computer vision processing
 -   **ESP32-CAM** - Embedded camera integration
 -   **Flask & React** - Modern web dashboard
-
-### Primary Application: Intelligent Traffic Management
-
-The system demonstrates object detection capabilities through a fully-featured traffic management solution that includes:
-
--   Multi-class vehicle detection and classification
--   Emergency vehicle priority identification
--   Pedestrian detection and counting
--   Automatic license plate recognition
--   Real-time analytics and data logging
 
 ### Extensibility
 
@@ -289,54 +310,85 @@ You should see the help menu with all available options.
 
 ## 🚀 Quick Start
 
-> 📌 **Current Implementation**: The examples below demonstrate the **vehicle detection application**. The system can be modified to detect any of the 80+ COCO object classes.
+> 📌 **Detection Modes**:
+>
+> -   **Vehicle Mode** (default): Detects vehicles with priority classification
+> -   **General Mode** (--general-objects): Detects 80+ everyday objects
+> -   **Pedestrian Mode** (--pedestrians): Adds pedestrian detection to any mode
 
-### Option 1: Video File (Fastest Way to Test)
+### Option 1: Vehicle Detection (Default Mode)
 
 ```bash
-# Basic usage
+# Basic vehicle detection with priority
 python new.py --video traffic.mp4
 
 # With pedestrian detection
 python new.py --video traffic.mp4 --pedestrians
 
-# Maximum speed
-python new.py --video traffic.mp4 --scale 0.5
-
-# Best quality
+# Best quality (for license plate reading)
 python new.py --video traffic.mp4 --scale 1.0
 ```
 
-### Option 2: IP Camera (Phone Camera)
+### Option 2: General Object Detection (NEW! 🎉)
 
 ```bash
-# Using IP Webcam app
-python new.py --ip http://192.168.1.100:8080/video
+# Detect 80+ everyday objects
+python new.py --video scene.mp4 --general-objects
 
-# With pedestrian detection
-python new.py --ip http://192.168.1.100:8080/video --pedestrians
+# General objects with pedestrian highlighting
+python new.py --video scene.mp4 --general-objects --pedestrians
 
-# Using DroidCam
-python new.py --ip http://192.168.1.100:4747/video
+# Maximum speed for real-time
+python new.py --video scene.mp4 --general-objects --scale 0.5
 ```
 
-### Option 3: ESP32-CAM
+**What can be detected in General Mode:**
+
+-   👥 **People & Animals**: person, dog, cat, bird, horse, sheep, cow, elephant, bear, zebra, giraffe
+-   🚗 **Vehicles**: car, motorcycle, bicycle, bus, truck, train, airplane, boat
+-   🪑 **Furniture**: chair, couch, bed, dining table, toilet
+-   📱 **Electronics**: tv, laptop, mouse, keyboard, cell phone, microwave, oven, toaster, refrigerator
+-   🍎 **Food**: banana, apple, sandwich, orange, pizza, donut, cake, hot dog, broccoli, carrot
+-   ⚽ **Sports**: sports ball, kite, baseball bat, skateboard, surfboard, tennis racket, frisbee, skis
+-   🎒 **Accessories**: backpack, umbrella, handbag, tie, suitcase, bottle, cup, wine glass
+-   📚 **Objects**: book, clock, vase, scissors, teddy bear, potted plant
+-   And 50+ more!
+
+### Option 3: IP Camera (Phone Camera)
 
 ```bash
-# Using ESP32-CAM (after setup)
+# Vehicle detection from IP camera
+python new.py --ip http://192.168.1.100:8080/video
+
+# General object detection from IP camera
+python new.py --ip http://192.168.1.100:8080/video --general-objects
+
+# DroidCam
+python new.py --ip http://192.168.1.100:4747/video --general-objects
+```
+
+### Option 4: ESP32-CAM
+
+```bash
+# Vehicle mode (after ESP32 setup)
 python new.py --ip 192.168.1.50
 
-# With custom stream path
-python new.py --ip http://192.168.1.50/stream
+# General object detection
+python new.py --ip http://192.168.1.50/stream --general-objects
 ```
 
 ---
 
 ## 📱 Usage Examples
 
-> 🎯 **Note**: These examples showcase the vehicle detection application. To detect other objects, modify the detection classes in `new.py`.
+> 🎯 **Two Modes Available**:
+>
+> -   **Vehicle Mode**: Specialized detection for traffic management
+> -   **General Object Mode**: Detect any of 80+ COCO dataset objects
 
-### 1. Basic Vehicle Detection (Video File)
+### Mode 1: Vehicle Detection (Traffic Management)
+
+#### 1. Basic Vehicle Detection
 
 ```bash
 python new.py --video traffic.mp4
@@ -346,10 +398,10 @@ python new.py --video traffic.mp4
 
 -   Detects vehicles at 75% resolution (default)
 -   Tracks 5 nearest vehicles
--   Shows priority classification
+-   Shows priority classification (HIGH/MEDIUM/LOW)
 -   Processes at ~30 FPS
 
-### 2. Vehicle + Pedestrian Detection
+#### 2. Vehicle + Pedestrian Detection
 
 ```bash
 python new.py --video traffic.mp4 --pedestrians
@@ -362,7 +414,7 @@ python new.py --video traffic.mp4 --pedestrians
 -   Cyan boxes for pedestrians
 -   Exports pedestrian data to Excel
 
-### 3. License Plate Recognition
+#### 3. License Plate Recognition
 
 ```bash
 python new.py --video traffic.mp4 --scale 1.0
@@ -375,7 +427,51 @@ python new.py --video traffic.mp4 --scale 1.0
 -   Displays plates on bounding boxes
 -   Logs plates in Excel file
 
-### 4. IP Camera Live Stream
+### Mode 2: General Object Detection (NEW! 🎉)
+
+#### 4. Everyday Object Detection
+
+```bash
+python new.py --video scene.mp4 --general-objects
+```
+
+**What it does:**
+
+-   Detects 80+ object classes (person, dog, cat, chair, laptop, phone, etc.)
+-   Shows object counts by category
+-   Colorful bounding boxes per class
+-   Real-time object counting
+-   ~30 FPS performance
+
+#### 5. General Objects + Pedestrian Tracking
+
+```bash
+python new.py --video scene.mp4 --general-objects --pedestrians
+```
+
+**What it does:**
+
+-   Detects all COCO objects
+-   Highlights pedestrians in cyan
+-   Tracks pedestrian counts separately
+-   Useful for retail, security, public spaces
+
+#### 6. High-Performance General Detection
+
+```bash
+python new.py --video scene.mp4 --general-objects --scale 0.5
+```
+
+**What it does:**
+
+-   Processes at 50% resolution
+-   Achieves 40-50 FPS
+-   Lower quality but real-time speed
+-   Great for live monitoring
+
+### Live Camera Examples
+
+#### 7. IP Camera Live Stream (Vehicle Mode)
 
 ```bash
 python new.py --ip http://192.168.1.100:8080/video --pedestrians
@@ -388,7 +484,20 @@ python new.py --ip http://192.168.1.100:8080/video --pedestrians
 -   No artificial FPS limit
 -   Press 'e' to export data
 
-### 5. Maximum Performance Mode
+#### 8. IP Camera Live Stream (General Objects)
+
+```bash
+python new.py --ip http://192.168.1.100:8080/video --general-objects
+```
+
+**What it does:**
+
+-   Real-time multi-object detection
+-   Perfect for security/monitoring
+-   Detects people, animals, objects
+-   Live object counting
+
+#### 9. Maximum Performance Mode
 
 ```bash
 python new.py --video traffic.mp4 --scale 0.5
@@ -401,7 +510,7 @@ python new.py --video traffic.mp4 --scale 0.5
 -   Lower quality but faster
 -   Good for real-time monitoring
 
-### 6. High Quality Mode (Best OCR)
+#### 10. High Quality Mode (Best OCR)
 
 ```bash
 python new.py --video traffic.mp4 --scale 1.0 --pedestrians
@@ -413,6 +522,22 @@ python new.py --video traffic.mp4 --scale 1.0 --pedestrians
 -   Best license plate reading
 -   Pedestrian detection enabled
 -   ~15-20 FPS
+
+---
+
+## 🎯 Detection Mode Comparison
+
+| Feature                     | Vehicle Mode                                 | General Mode                                       | Vehicle + General |
+| --------------------------- | -------------------------------------------- | -------------------------------------------------- | ----------------- |
+| **Command**                 | `python new.py --video file.mp4`             | `python new.py --video file.mp4 --general-objects` | Not available     |
+| **Objects Detected**        | Cars, trucks, buses, motorcycles, bicycles   | 80+ COCO classes                                   | Choose one mode   |
+| **Priority Classification** | ✅ HIGH/MEDIUM/LOW                           | ❌ N/A                                             | Vehicle mode only |
+| **License Plate OCR**       | ✅ Yes                                       | ❌ No                                              | Vehicle mode only |
+| **Pedestrian Detection**    | ✅ Optional (--pedestrians)                  | ✅ Optional (--pedestrians)                        | Both support      |
+| **ESP32 LED Control**       | ✅ Yes (priority-based)                      | ❌ No                                              | Vehicle mode only |
+| **Excel Export**            | ✅ Yes (timestamp, vehicle, priority, plate) | ✅ Yes (timestamp, object, count)                  | Both support      |
+| **Use Cases**               | Traffic management, parking, tolls           | Retail, security, monitoring                       | -                 |
+| **Performance**             | 30-40 FPS                                    | 30-40 FPS                                          | Same              |
 
 ---
 
@@ -995,12 +1120,14 @@ Expected improvement: 2-3x faster OCR processing
 
 ```
 Object-detection/
-├── new.py                          # Main object detection script (vehicle detection implementation)
+├── new.py                          # Main object detection script (2 modes: vehicle + general)
 ├── api.py                          # Flask REST API backend
 ├── esp32_cam_stream.ino           # ESP32-CAM firmware for IoT camera integration
 ├── requirements.txt                # Python dependencies
 ├── yolov8n.pt                     # YOLOv8 model (80+ COCO classes)
-├── README.md                       # This file
+├── README.md                       # Complete project documentation
+├── GENERAL_OBJECT_DETECTION.md    # 🎯 NEW! General object detection guide
+├── QUICK_COMMANDS.md              # Quick reference for all commands
 ├── API_SETUP.md                   # API documentation
 ├── IP_CAMERA_SETUP.md             # IP camera configuration guide
 ├── PERFORMANCE_GUIDE.md           # Performance optimization tips
@@ -1016,32 +1143,51 @@ Object-detection/
 
 ---
 
+## 📚 Documentation Files
+
+-   **README.md** (this file) - Complete system documentation
+-   **GENERAL_OBJECT_DETECTION.md** - In-depth guide for general object detection mode (80+ classes)
+-   **QUICK_COMMANDS.md** - Quick reference card with all command variations
+-   **API_SETUP.md** - Flask API setup and endpoints
+-   **IP_CAMERA_SETUP.md** - IP camera configuration (IP Webcam, DroidCam, etc.)
+-   **PERFORMANCE_GUIDE.md** - Performance optimization tips
+-   **WIRING_DIAGRAM.md** - ESP32-CAM hardware wiring diagrams
+
+---
+
 ## 🎓 Usage Tips
 
 ### Best Practices
 
-1. **Camera Positioning**
+1. **Choosing the Right Mode**
 
-    - Mount camera 3-10 meters from road
-    - Angle slightly downward for better plate visibility
+    - **Vehicle Mode**: Traffic monitoring, parking lots, toll booths
+    - **General Mode**: Retail, security, research, wildlife, offices
+    - **Pedestrian Flag**: Add to either mode for people tracking
+    - **Scale Factor**: 0.5 (fast), 0.75 (balanced), 1.0 (quality)
+
+2. **Camera Positioning**
+
+    - Mount camera 3-10 meters from subject
+    - Angle slightly downward for better visibility
     - Ensure good lighting (natural or artificial)
     - Avoid direct sunlight/headlights in lens
 
-2. **Performance**
+3. **Performance**
 
     - Start with default settings (`--scale 0.75`)
     - Use `--scale 0.5` for real-time monitoring
-    - Use `--scale 1.0` for license plate reading
+    - Use `--scale 1.0` for license plate reading or detailed object detection
     - Close other applications for better performance
 
-3. **Data Collection**
+4. **Data Collection**
 
     - Press 'e' periodically to export data
     - Excel files are timestamped automatically
     - Keep detection running in background
-    - Review logs for traffic patterns
+    - Review logs for patterns and insights
 
-4. **Network**
+5. **Network**
     - Use 2.4GHz WiFi for ESP32-CAM
     - Keep phone/camera close to router
     - Use wired connection for PC if possible
@@ -1089,6 +1235,7 @@ This project is licensed under the MIT License - see LICENSE file for details.
 
 ### Version 2.0.0 (Latest)
 
+-   ✅ **Added general object detection mode** (80+ COCO classes)
 -   ✅ Added pedestrian detection feature
 -   ✅ Fixed blinking boxes issue
 -   ✅ Improved frame rate (30-40 FPS)

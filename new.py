@@ -1,27 +1,38 @@
 """
-ESP32-CAM Vehicle Detection and Priority Classification Client
+ESP32-CAM Object Detection System with Multiple Modes
+
+This script provides THREE detection modes:
+  1. VEHICLE MODE (default): Vehicle detection with priority classification
+  2. GENERAL MODE: Detect 80+ everyday objects (COCO dataset)
+  3. PEDESTRIAN MODE: Add pedestrian detection to vehicle mode
 
 Usage:
   - Upload the provided Arduino sketch to your ESP32-CAM (see README).
   - Make sure the ESP32-CAM is on your Wi-Fi and note its IP address.
   - Install Python requirements: pip install -r requirements.txt
-  - Run with ESP32 stream: python new.py --ip 192.168.x.y
-  - Run with video file: python new.py --video path/to/video.mp4
+  
+  VEHICLE MODE (default):
+    python new.py --ip 192.168.x.y
+    python new.py --video path/to/video.mp4
+  
+  GENERAL OBJECT DETECTION MODE:
+    python new.py --video path/to/video.mp4 --general-objects
+    python new.py --ip 192.168.x.y --general-objects
+  
+  WITH PEDESTRIAN DETECTION:
+    python new.py --video path/to/video.mp4 --pedestrians
+    python new.py --video path/to/video.mp4 --general-objects --pedestrians
 
-What this script does:
-  - Connects to the ESP32-CAM MJPEG stream OR processes a video file
-  - Runs vehicle detection using Ultralytics YOLO (yolov8n)
-  - Classifies vehicles by priority:
-      * HIGH: Emergency vehicles (ambulance, fire truck, police car)
-      * MEDIUM: Commercial vehicles (bus, truck)
-      * LOW: Personal vehicles (car, motorcycle, bicycle)
-  - Controls ESP32 LEDs based on highest priority vehicle detected
-  - Shows detections (labels + bounding boxes + priority) in a window
-  - Keeps an in-memory log of detections (label + timestamp + priority)
-  - Provides a Tkinter "Generate Excel" button which writes the log to an Excel file
+Features:
+  - VEHICLE MODE: Detects cars, trucks, buses, motorcycles, bicycles with priority
+  - GENERAL MODE: Detects 80+ objects (person, dog, cat, chair, laptop, etc.)
+  - License Plate Recognition (Vehicle mode only)
+  - ESP32-CAM LED control based on priority
+  - Excel export with detection logs
+  - Real-time FPS and detection stats
 
 Notes:
-  - The script requires internet the first time to download YOLO weights via ultralytics.
+  - The script requires internet the first time to download YOLO weights.
   - LED colors: RED = High Priority, YELLOW = Medium Priority, GREEN = Low Priority
 """
 import argparse
@@ -58,6 +69,21 @@ except Exception:
     easyocr = None
 
 
+# COCO Dataset - 80 Object Classes that YOLO can detect
+COCO_CLASSES = [
+    'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat',
+    'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat',
+    'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra', 'giraffe', 'backpack',
+    'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee', 'skis', 'snowboard', 'sports ball',
+    'kite', 'baseball bat', 'baseball glove', 'skateboard', 'surfboard', 'tennis racket',
+    'bottle', 'wine glass', 'cup', 'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple',
+    'sandwich', 'orange', 'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair',
+    'couch', 'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse',
+    'remote', 'keyboard', 'cell phone', 'microwave', 'oven', 'toaster', 'sink', 'refrigerator',
+    'book', 'clock', 'vase', 'scissors', 'teddy bear', 'hair drier', 'toothbrush'
+]
+
+
 # Vehicle priority classification
 VEHICLE_PRIORITY = {
     # High Priority - Emergency Vehicles
@@ -86,12 +112,14 @@ LED_COLORS = {
 
 
 class ESP32CamDetector:
-    def __init__(self, esp_ip=None, stream_path="/stream", video_path=None, process_scale=1.0, detect_pedestrians=False):
+    def __init__(self, esp_ip=None, stream_path="/stream", video_path=None, process_scale=1.0, 
+                 detect_pedestrians=False, general_mode=False):
         self.esp_ip = esp_ip
         self.video_path = video_path
         self.use_video = video_path is not None
         self.process_scale = process_scale  # Scale factor for processing (0.5 = half size for 4x speed)
         self.detect_pedestrians = detect_pedestrians  # Enable pedestrian detection
+        self.general_mode = general_mode  # Enable general object detection (80+ classes)
         
         if esp_ip and esp_ip.startswith("http"):
             self.stream_url = esp_ip
@@ -112,6 +140,7 @@ class ESP32CamDetector:
         self.last_annotated = None  # Store last annotated frame to prevent blinking
         self.max_vehicles = 5  # Only track 5 nearest vehicles
         self.pedestrian_count = 0  # Track pedestrians in current frame
+        self.object_counts = {}  # Track counts of different objects in general mode
 
     def load_model(self):
         if YOLO is None:
@@ -315,8 +344,15 @@ class ESP32CamDetector:
         if self.cap is None:
             self.start_capture()
 
+        # Determine mode
+        if self.general_mode:
+            mode_str = "GENERAL OBJECT DETECTION (80+ classes)"
+        else:
+            mode_str = "VEHICLE DETECTION with priority classification"
+        
         source_type = "video file" if self.use_video else "ESP32 stream"
-        print(f"Starting vehicle detection from {source_type}. Press 'q' in the video window to quit.")
+        print(f"Starting {mode_str} from {source_type}.")
+        print(f"Press 'q' in the video window to quit, 'e' to export data.")
         
         frame_count = 0
         detection_interval = 3  # Process every 3rd frame for better performance
@@ -381,6 +417,7 @@ class ESP32CamDetector:
                 # Collect all vehicle detections first
                 vehicle_detections = []
                 pedestrian_detections = []
+                general_detections = []  # For general object detection mode
                 
                 # Process detection results
                 for r in results:
@@ -395,6 +432,22 @@ class ESP32CamDetector:
                         cls = int(box.cls[0]) if hasattr(box, 'cls') and len(box.cls) else None
                         name = r.names[cls] if (cls is not None and r.names is not None and cls in r.names) else str(cls)
 
+                        # GENERAL OBJECT DETECTION MODE
+                        if self.general_mode:
+                            # Detect ALL objects from COCO dataset (80+ classes)
+                            frame_height = frame.shape[0]
+                            distance = frame_height - y2
+                            
+                            general_detections.append({
+                                'bbox': (x1, y1, x2, y2),
+                                'conf': conf,
+                                'name': name,
+                                'distance': distance,
+                                'cls': cls
+                            })
+                            continue  # Skip vehicle-specific logic in general mode
+                        
+                        # VEHICLE MODE (default behavior)
                         # Check if it's a pedestrian (person detection)
                         if self.detect_pedestrians and name.lower() == 'person':
                             # Calculate distance from bottom center
@@ -430,100 +483,168 @@ class ESP32CamDetector:
                 # Update pedestrian count
                 self.pedestrian_count = len(pedestrian_detections)
                 
-                # Draw pedestrians if feature is enabled
-                if self.detect_pedestrians:
-                    for ped in pedestrian_detections:
-                        x1, y1, x2, y2 = ped['bbox']
-                        conf = ped['conf']
+                # =============== GENERAL OBJECT DETECTION MODE ===============
+                if self.general_mode:
+                    # Sort by confidence for better display
+                    general_detections.sort(key=lambda d: d['conf'], reverse=True)
+                    
+                    # Update object counts
+                    self.object_counts.clear()
+                    for obj in general_detections:
+                        obj_name = obj['name']
+                        self.object_counts[obj_name] = self.object_counts.get(obj_name, 0) + 1
+                    
+                    # Draw all detected objects
+                    color_map = {}  # Cache colors for each class
+                    import random
+                    random.seed(42)  # Consistent colors
+                    
+                    for obj in general_detections:
+                        x1, y1, x2, y2 = obj['bbox']
+                        conf = obj['conf']
+                        name = obj['name']
+                        cls = obj['cls']
                         
-                        # Draw pedestrian bounding box in cyan
-                        color = (255, 255, 0)  # Cyan for pedestrians
+                        # Generate consistent color for each object class
+                        if cls not in color_map:
+                            color_map[cls] = (
+                                random.randint(0, 255),
+                                random.randint(0, 255),
+                                random.randint(0, 255)
+                            )
+                        color = color_map[cls]
+                        
+                        # Draw bounding box
                         cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
                         
                         # Create label
-                        label = f"Pedestrian {conf:.2f}"
+                        label = f"{name} {conf:.2f}"
                         
                         # Draw label background
                         (label_w, label_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
                         cv2.rectangle(annotated, (x1, y1 - label_h - 12), (x1 + label_w + 10, y1), color, -1)
-                        cv2.putText(annotated, label, (x1 + 5, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
-                
-                # Now draw only the nearest vehicles
-                for vehicle in nearest_vehicles:
-                    x1, y1, x2, y2 = vehicle['bbox']
-                    conf = vehicle['conf']
-                    name = vehicle['name']
-                    priority = vehicle['priority']
-                    
-                    frame_priorities.append(priority)
-                    
-                    # Try to detect license plate (only on OCR frames to improve performance)
-                    license_plate = None
-                    if run_ocr:
-                        vehicle_id = f"{x1}_{y1}_{x2}_{y2}"  # Simple ID based on position
-                        license_plate = self.detect_license_plate(frame, x1, y1, x2, y2, vehicle_id)
+                        cv2.putText(annotated, label, (x1 + 5, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
                         
-                        # Debug: Show when we're processing
+                        # Log detection
+                        ts = datetime.now().isoformat(sep=' ', timespec='seconds')
+                        self.log.append((ts, name, "N/A", "N/A", 0))  # No priority/plate in general mode
+                    
+                    # Display object counts
+                    y_offset = 30
+                    total_objects = len(general_detections)
+                    status_text = f"Total Objects: {total_objects} | Unique Classes: {len(self.object_counts)}"
+                    cv2.putText(annotated, status_text, (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                    cv2.putText(annotated, status_text, (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 1)
+                    
+                    # Display top 5 detected objects
+                    y_offset += 35
+                    sorted_counts = sorted(self.object_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+                    for obj_name, count in sorted_counts:
+                        count_text = f"{obj_name}: {count}"
+                        cv2.putText(annotated, count_text, (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                        cv2.putText(annotated, count_text, (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1)
+                        y_offset += 30
+                    
+                    # Store and display
+                    self.last_annotated = annotated.copy()
+                    cv2.imshow("General Object Detection (80+ Classes)", annotated)
+                
+                # =============== VEHICLE MODE (default) ===============
+                else:
+                    # Draw pedestrians if feature is enabled
+                    if self.detect_pedestrians:
+                        for ped in pedestrian_detections:
+                            x1, y1, x2, y2 = ped['bbox']
+                            conf = ped['conf']
+                            
+                            # Draw pedestrian bounding box in cyan
+                            color = (255, 255, 0)  # Cyan for pedestrians
+                            cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
+                            
+                            # Create label
+                            label = f"Pedestrian {conf:.2f}"
+                            
+                            # Draw label background
+                            (label_w, label_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                            cv2.rectangle(annotated, (x1, y1 - label_h - 12), (x1 + label_w + 10, y1), color, -1)
+                            cv2.putText(annotated, label, (x1 + 5, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+                    
+                    # Now draw only the nearest vehicles
+                    for vehicle in nearest_vehicles:
+                        x1, y1, x2, y2 = vehicle['bbox']
+                        conf = vehicle['conf']
+                        name = vehicle['name']
+                        priority = vehicle['priority']
+                        
+                        frame_priorities.append(priority)
+                        
+                        # Try to detect license plate (only on OCR frames to improve performance)
+                        license_plate = None
+                        if run_ocr:
+                            vehicle_id = f"{x1}_{y1}_{x2}_{y2}"  # Simple ID based on position
+                            license_plate = self.detect_license_plate(frame, x1, y1, x2, y2, vehicle_id)
+                            
+                            # Debug: Show when we're processing
+                            if license_plate:
+                                print(f"✅ Vehicle: {name}, Plate: {license_plate}")
+                        
+                        # Choose color based on priority
+                        if priority == 'HIGH':
+                            color = (0, 0, 255)  # Red for high priority
+                        elif priority == 'MEDIUM':
+                            color = (0, 165, 255)  # Orange/Yellow for medium priority
+                        else:  # LOW
+                            color = (0, 255, 0)  # Green for low priority
+                        
+                        # Draw bounding box
+                        cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
+                        
+                        # Create label with priority and license plate
                         if license_plate:
-                            print(f"✅ Vehicle: {name}, Plate: {license_plate}")
-                    
-                    # Choose color based on priority
-                    if priority == 'HIGH':
-                        color = (0, 0, 255)  # Red for high priority
-                    elif priority == 'MEDIUM':
-                        color = (0, 165, 255)  # Orange/Yellow for medium priority
-                    else:  # LOW
-                        color = (0, 255, 0)  # Green for low priority
-                    
-                    # Draw bounding box
-                    cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
-                    
-                    # Create label with priority and license plate
-                    if license_plate:
-                        label = f"{name} {conf:.2f} [{priority}] | Plate: {license_plate}"
-                    else:
-                        label = f"{name} {conf:.2f} [{priority}]"
-                    
-                    # Draw label background with better visibility
-                    (label_w, label_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-                    cv2.rectangle(annotated, (x1, y1 - label_h - 12), (x1 + label_w + 10, y1), color, -1)
-                    cv2.putText(annotated, label, (x1 + 5, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                            label = f"{name} {conf:.2f} [{priority}] | Plate: {license_plate}"
+                        else:
+                            label = f"{name} {conf:.2f} [{priority}]"
+                        
+                        # Draw label background with better visibility
+                        (label_w, label_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                        cv2.rectangle(annotated, (x1, y1 - label_h - 12), (x1 + label_w + 10, y1), color, -1)
+                        cv2.putText(annotated, label, (x1 + 5, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
-                    # Log detection with license plate and pedestrian count
-                    ts = datetime.now().isoformat(sep=' ', timespec='seconds')
-                    self.log.append((ts, name, priority, license_plate if license_plate else "N/A", self.pedestrian_count if self.detect_pedestrians else 0))
-                
-                # Determine highest priority and send LED command
-                if frame_priorities:
-                    if 'HIGH' in frame_priorities:
-                        new_priority = 'HIGH'
-                    elif 'MEDIUM' in frame_priorities:
-                        new_priority = 'MEDIUM'
-                    else:
-                        new_priority = 'LOW'
+                        # Log detection with license plate and pedestrian count
+                        ts = datetime.now().isoformat(sep=' ', timespec='seconds')
+                        self.log.append((ts, name, priority, license_plate if license_plate else "N/A", self.pedestrian_count if self.detect_pedestrians else 0))
                     
-                    # Only send command if priority changed
-                    if new_priority != self.current_priority:
-                        self.current_priority = new_priority
-                        self.send_led_command(new_priority)
-                else:
-                    # No vehicles detected, turn off LEDs
-                    if self.current_priority != 'NONE':
-                        self.current_priority = 'NONE'
-                        self.send_led_command('NONE')
-                
-                # Display current priority status
-                if self.detect_pedestrians:
-                    status_text = f"Priority: {self.current_priority} | Vehicles: {len(nearest_vehicles)}/{self.max_vehicles} | Pedestrians: {self.pedestrian_count}"
-                else:
-                    status_text = f"Current Priority: {self.current_priority} | Tracking: {len(nearest_vehicles)}/{self.max_vehicles} vehicles"
-                cv2.putText(annotated, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                cv2.putText(annotated, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 1)
+                    # Determine highest priority and send LED command
+                    if frame_priorities:
+                        if 'HIGH' in frame_priorities:
+                            new_priority = 'HIGH'
+                        elif 'MEDIUM' in frame_priorities:
+                            new_priority = 'MEDIUM'
+                        else:
+                            new_priority = 'LOW'
+                        
+                        # Only send command if priority changed
+                        if new_priority != self.current_priority:
+                            self.current_priority = new_priority
+                            self.send_led_command(new_priority)
+                    else:
+                        # No vehicles detected, turn off LEDs
+                        if self.current_priority != 'NONE':
+                            self.current_priority = 'NONE'
+                            self.send_led_command('NONE')
+                    
+                    # Display current priority status
+                    if self.detect_pedestrians:
+                        status_text = f"Priority: {self.current_priority} | Vehicles: {len(nearest_vehicles)}/{self.max_vehicles} | Pedestrians: {self.pedestrian_count}"
+                    else:
+                        status_text = f"Current Priority: {self.current_priority} | Tracking: {len(nearest_vehicles)}/{self.max_vehicles} vehicles"
+                    cv2.putText(annotated, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                    cv2.putText(annotated, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 1)
 
-                # Store this annotated frame to prevent blinking
-                self.last_annotated = annotated.copy()
-                window_title = "Vehicle & Pedestrian Detection" if self.detect_pedestrians else "ESP32-CAM Vehicle Detection & Priority Classification"
-                cv2.imshow(window_title, annotated)
+                    # Store this annotated frame to prevent blinking
+                    self.last_annotated = annotated.copy()
+                    window_title = "Vehicle & Pedestrian Detection" if self.detect_pedestrians else "ESP32-CAM Vehicle Detection & Priority Classification"
+                    cv2.imshow(window_title, annotated)
             else:
                 # Show last annotated frame instead of raw frame to prevent blinking
                 window_title = "Vehicle & Pedestrian Detection" if self.detect_pedestrians else "ESP32-CAM Vehicle Detection & Priority Classification"
@@ -615,27 +736,32 @@ def start_tkinter_ui(detector: ESP32CamDetector):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Vehicle detection and priority classification from camera stream or video",
+        description="Multi-Mode Object Detection System: Vehicle Priority Classification OR General Object Detection (80+ classes)",
         epilog="""
 Examples:
-  # ESP32-CAM stream
+  # VEHICLE MODE (default) - Detects vehicles with priority classification
   python new.py --ip 192.168.1.50
-  python new.py --ip http://192.168.1.50/stream
-  
-  # IP Webcam app (Android)
-  python new.py --ip http://192.168.1.100:8080/video
-  
-  # DroidCam
-  python new.py --ip http://192.168.1.100:4747/video
-  
-  # Video file
   python new.py --video traffic.mp4
-  python new.py --video traffic.mp4 --scale 0.5
   
-  # WITH PEDESTRIAN DETECTION:
+  # GENERAL OBJECT DETECTION MODE - Detects 80+ everyday objects
+  python new.py --video scene.mp4 --general-objects
+  python new.py --ip http://192.168.1.100:8080/video --general-objects
+  
+  # IP Camera Sources:
+  python new.py --ip http://192.168.1.100:8080/video  # IP Webcam (Android)
+  python new.py --ip http://192.168.1.100:4747/video  # DroidCam
+  python new.py --ip http://192.168.1.50/stream       # ESP32-CAM
+  
+  # WITH PEDESTRIAN DETECTION (Vehicle mode):
   python new.py --video traffic.mp4 --pedestrians
   python new.py --ip http://192.168.1.100:8080/video --pedestrians
-  python new.py --video traffic.mp4 --pedestrians --scale 0.5
+  
+  # Performance optimization:
+  python new.py --video traffic.mp4 --scale 0.5         # Faster, lower quality
+  python new.py --video traffic.mp4 --scale 1.0         # Best quality, slower
+  
+  # General objects WITH pedestrian tracking:
+  python new.py --video scene.mp4 --general-objects --pedestrians
         """,
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -644,19 +770,25 @@ Examples:
     parser.add_argument("--video", help="Path to video file for offline processing (alternative to --ip)")
     parser.add_argument("--scale", type=float, default=0.75, help="Processing scale factor (0.5-1.0, lower=faster, default=0.75)")
     parser.add_argument("--pedestrians", action="store_true", help="Enable pedestrian detection (detects people in the frame)")
+    parser.add_argument("--general-objects", action="store_true", help="Enable general object detection mode (detects 80+ COCO classes instead of vehicle-only)")
     args = parser.parse_args()
 
     # Validate input
     if not args.ip and not args.video:
         print("Error: Must provide either --ip for camera stream or --video for video file")
-        print("\nCommon IP Camera Apps:")
+        print("\n=== DETECTION MODES ===")
+        print("  Vehicle Mode (default):     Detects cars, trucks, buses with priority")
+        print("  General Objects Mode:       Detects 80+ objects (add --general-objects flag)")
+        print("\n=== CAMERA SOURCES ===")
         print("  IP Webcam (Android):  http://YOUR_PHONE_IP:8080/video")
         print("  DroidCam:             http://YOUR_PHONE_IP:4747/video")
         print("  ESP32-CAM:            http://YOUR_ESP32_IP/stream")
         print("  Generic MJPEG:        http://YOUR_CAMERA_IP:PORT/stream")
         print("  RTSP Camera:          rtsp://YOUR_CAMERA_IP:554/stream")
-        print("\nAdd --pedestrians flag to detect pedestrians:")
-        print("  python new.py --video traffic.mp4 --pedestrians")
+        print("\n=== QUICK EXAMPLES ===")
+        print("  Vehicle detection:           python new.py --video traffic.mp4")
+        print("  General object detection:    python new.py --video scene.mp4 --general-objects")
+        print("  With pedestrian tracking:    python new.py --video traffic.mp4 --pedestrians")
         print("\nRun 'python new.py --help' for more examples")
         parser.print_help()
         sys.exit(1)
@@ -671,14 +803,24 @@ Examples:
         stream_path=args.stream_path,
         video_path=args.video,
         process_scale=args.scale,
-        detect_pedestrians=args.pedestrians
+        detect_pedestrians=args.pedestrians,
+        general_mode=args.general_objects
     )
     
     print(f"Processing at {args.scale*100:.0f}% resolution for better performance")
-    if args.pedestrians:
-        print("🚶 Pedestrian detection ENABLED - Will detect and track people in the frame")
+    
+    # Display mode information
+    if args.general_objects:
+        print("🎯 GENERAL OBJECT DETECTION MODE - Detecting 80+ object classes from COCO dataset")
+        print("   Objects: person, car, dog, cat, chair, laptop, phone, bottle, and 70+ more!")
     else:
-        print("🚗 Vehicle-only mode - Add --pedestrians flag to detect pedestrians")
+        print("🚗 VEHICLE DETECTION MODE - Detecting vehicles with priority classification")
+        print("   Add --general-objects flag for general object detection (80+ classes)")
+    
+    if args.pedestrians:
+        print("🚶 Pedestrian detection ENABLED - Will highlight people in the frame")
+    else:
+        print("� Add --pedestrians flag to enable pedestrian tracking")
 
     # start tkinter UI in separate thread
     ui_thread = threading.Thread(target=start_tkinter_ui, args=(detector,), daemon=True)

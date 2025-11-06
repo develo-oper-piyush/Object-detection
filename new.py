@@ -86,11 +86,12 @@ LED_COLORS = {
 
 
 class ESP32CamDetector:
-    def __init__(self, esp_ip=None, stream_path="/stream", video_path=None, process_scale=1.0):
+    def __init__(self, esp_ip=None, stream_path="/stream", video_path=None, process_scale=1.0, detect_pedestrians=False):
         self.esp_ip = esp_ip
         self.video_path = video_path
         self.use_video = video_path is not None
         self.process_scale = process_scale  # Scale factor for processing (0.5 = half size for 4x speed)
+        self.detect_pedestrians = detect_pedestrians  # Enable pedestrian detection
         
         if esp_ip and esp_ip.startswith("http"):
             self.stream_url = esp_ip
@@ -103,13 +104,14 @@ class ESP32CamDetector:
         self.model = None
         self.ocr_reader = None
         self.running = False
-        self.log = deque()  # store (timestamp_iso, label, priority, license_plate)
+        self.log = deque()  # store (timestamp_iso, label, priority, license_plate, pedestrian_count)
         self.frame = None
         self.current_priority = 'NONE'  # Track highest priority vehicle detected
         self.plate_cache = {}  # Cache to avoid reading same plate multiple times
         self.plate_cache_timeout = 3  # seconds
         self.last_annotated = None  # Store last annotated frame to prevent blinking
         self.max_vehicles = 5  # Only track 5 nearest vehicles
+        self.pedestrian_count = 0  # Track pedestrians in current frame
 
     def load_model(self):
         if YOLO is None:
@@ -378,6 +380,7 @@ class ESP32CamDetector:
                 
                 # Collect all vehicle detections first
                 vehicle_detections = []
+                pedestrian_detections = []
                 
                 # Process detection results
                 for r in results:
@@ -392,6 +395,18 @@ class ESP32CamDetector:
                         cls = int(box.cls[0]) if hasattr(box, 'cls') and len(box.cls) else None
                         name = r.names[cls] if (cls is not None and r.names is not None and cls in r.names) else str(cls)
 
+                        # Check if it's a pedestrian (person detection)
+                        if self.detect_pedestrians and name.lower() == 'person':
+                            # Calculate distance from bottom center
+                            frame_height = frame.shape[0]
+                            distance = frame_height - y2
+                            
+                            pedestrian_detections.append({
+                                'bbox': (x1, y1, x2, y2),
+                                'conf': conf,
+                                'distance': distance
+                            })
+                        
                         # Classify vehicle priority
                         priority = self.classify_vehicle_priority(name)
                         
@@ -411,6 +426,27 @@ class ESP32CamDetector:
                 # Sort by distance and keep only the 5 nearest vehicles
                 vehicle_detections.sort(key=lambda v: v['distance'])
                 nearest_vehicles = vehicle_detections[:self.max_vehicles]
+                
+                # Update pedestrian count
+                self.pedestrian_count = len(pedestrian_detections)
+                
+                # Draw pedestrians if feature is enabled
+                if self.detect_pedestrians:
+                    for ped in pedestrian_detections:
+                        x1, y1, x2, y2 = ped['bbox']
+                        conf = ped['conf']
+                        
+                        # Draw pedestrian bounding box in cyan
+                        color = (255, 255, 0)  # Cyan for pedestrians
+                        cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
+                        
+                        # Create label
+                        label = f"Pedestrian {conf:.2f}"
+                        
+                        # Draw label background
+                        (label_w, label_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                        cv2.rectangle(annotated, (x1, y1 - label_h - 12), (x1 + label_w + 10, y1), color, -1)
+                        cv2.putText(annotated, label, (x1 + 5, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
                 
                 # Now draw only the nearest vehicles
                 for vehicle in nearest_vehicles:
@@ -453,9 +489,9 @@ class ESP32CamDetector:
                     cv2.rectangle(annotated, (x1, y1 - label_h - 12), (x1 + label_w + 10, y1), color, -1)
                     cv2.putText(annotated, label, (x1 + 5, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
-                    # Log detection with license plate
+                    # Log detection with license plate and pedestrian count
                     ts = datetime.now().isoformat(sep=' ', timespec='seconds')
-                    self.log.append((ts, name, priority, license_plate if license_plate else "N/A"))
+                    self.log.append((ts, name, priority, license_plate if license_plate else "N/A", self.pedestrian_count if self.detect_pedestrians else 0))
                 
                 # Determine highest priority and send LED command
                 if frame_priorities:
@@ -477,19 +513,24 @@ class ESP32CamDetector:
                         self.send_led_command('NONE')
                 
                 # Display current priority status
-                status_text = f"Current Priority: {self.current_priority} | Tracking: {len(nearest_vehicles)}/{self.max_vehicles} vehicles"
-                cv2.putText(annotated, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-                cv2.putText(annotated, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 1)
+                if self.detect_pedestrians:
+                    status_text = f"Priority: {self.current_priority} | Vehicles: {len(nearest_vehicles)}/{self.max_vehicles} | Pedestrians: {self.pedestrian_count}"
+                else:
+                    status_text = f"Current Priority: {self.current_priority} | Tracking: {len(nearest_vehicles)}/{self.max_vehicles} vehicles"
+                cv2.putText(annotated, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                cv2.putText(annotated, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 1)
 
                 # Store this annotated frame to prevent blinking
                 self.last_annotated = annotated.copy()
-                cv2.imshow("ESP32-CAM Vehicle Detection & Priority Classification", annotated)
+                window_title = "Vehicle & Pedestrian Detection" if self.detect_pedestrians else "ESP32-CAM Vehicle Detection & Priority Classification"
+                cv2.imshow(window_title, annotated)
             else:
                 # Show last annotated frame instead of raw frame to prevent blinking
+                window_title = "Vehicle & Pedestrian Detection" if self.detect_pedestrians else "ESP32-CAM Vehicle Detection & Priority Classification"
                 if self.last_annotated is not None:
-                    cv2.imshow("ESP32-CAM Vehicle Detection & Priority Classification", self.last_annotated)
+                    cv2.imshow(window_title, self.last_annotated)
                 else:
-                    cv2.imshow("ESP32-CAM Vehicle Detection & Priority Classification", frame)
+                    cv2.imshow(window_title, frame)
             
             key = cv2.waitKey(wait_time) & 0xFF
             if key == ord('q'):
@@ -526,9 +567,22 @@ class ESP32CamDetector:
         wb = Workbook()
         ws = wb.active
         ws.title = "Vehicle Detections"
-        ws.append(("Timestamp", "Vehicle Type", "Priority", "License Plate"))
-        for ts, label, priority, plate in list(self.log):
-            ws.append((ts, label, priority, plate))
+        
+        # Add headers based on pedestrian detection mode
+        if self.detect_pedestrians:
+            ws.append(("Timestamp", "Vehicle Type", "Priority", "License Plate", "Pedestrians Nearby"))
+            for ts, label, priority, plate, ped_count in list(self.log):
+                ws.append((ts, label, priority, plate, ped_count))
+        else:
+            ws.append(("Timestamp", "Vehicle Type", "Priority", "License Plate"))
+            for entry in list(self.log):
+                # Handle both old format (4 items) and new format (5 items)
+                if len(entry) == 5:
+                    ts, label, priority, plate, _ = entry
+                else:
+                    ts, label, priority, plate = entry
+                ws.append((ts, label, priority, plate))
+        
         wb.save(filename)
         return filename
 
@@ -574,15 +628,14 @@ Examples:
   # DroidCam
   python new.py --ip http://192.168.1.100:4747/video
   
-  # Generic IP camera (MJPEG)
-  python new.py --ip http://192.168.1.100:8081/stream
-  
-  # RTSP camera
-  python new.py --ip rtsp://192.168.1.100:554/stream
-  
   # Video file
   python new.py --video traffic.mp4
   python new.py --video traffic.mp4 --scale 0.5
+  
+  # WITH PEDESTRIAN DETECTION:
+  python new.py --video traffic.mp4 --pedestrians
+  python new.py --ip http://192.168.1.100:8080/video --pedestrians
+  python new.py --video traffic.mp4 --pedestrians --scale 0.5
         """,
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -590,6 +643,7 @@ Examples:
     parser.add_argument("--stream-path", default="/stream", help="Stream path for ESP32-CAM (default: /stream, not used for full URLs)")
     parser.add_argument("--video", help="Path to video file for offline processing (alternative to --ip)")
     parser.add_argument("--scale", type=float, default=0.75, help="Processing scale factor (0.5-1.0, lower=faster, default=0.75)")
+    parser.add_argument("--pedestrians", action="store_true", help="Enable pedestrian detection (detects people in the frame)")
     args = parser.parse_args()
 
     # Validate input
@@ -601,6 +655,8 @@ Examples:
         print("  ESP32-CAM:            http://YOUR_ESP32_IP/stream")
         print("  Generic MJPEG:        http://YOUR_CAMERA_IP:PORT/stream")
         print("  RTSP Camera:          rtsp://YOUR_CAMERA_IP:554/stream")
+        print("\nAdd --pedestrians flag to detect pedestrians:")
+        print("  python new.py --video traffic.mp4 --pedestrians")
         print("\nRun 'python new.py --help' for more examples")
         parser.print_help()
         sys.exit(1)
@@ -614,10 +670,15 @@ Examples:
         esp_ip=args.ip,
         stream_path=args.stream_path,
         video_path=args.video,
-        process_scale=args.scale
+        process_scale=args.scale,
+        detect_pedestrians=args.pedestrians
     )
     
     print(f"Processing at {args.scale*100:.0f}% resolution for better performance")
+    if args.pedestrians:
+        print("🚶 Pedestrian detection ENABLED - Will detect and track people in the frame")
+    else:
+        print("🚗 Vehicle-only mode - Add --pedestrians flag to detect pedestrians")
 
     # start tkinter UI in separate thread
     ui_thread = threading.Thread(target=start_tkinter_ui, args=(detector,), daemon=True)

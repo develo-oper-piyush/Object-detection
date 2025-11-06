@@ -1,5 +1,22 @@
 # 🎯 Quick Command Reference
 
+## 📖 Getting Help
+
+```bash
+# Display all available options and usage examples
+python new.py --help
+```
+
+**What it shows:**
+
+-   Complete list of all command-line flags
+-   Description of each option
+-   Default values and valid ranges
+-   Usage examples for common scenarios
+-   Supported camera sources and formats
+
+---
+
 ## Vehicle Detection Mode (Default)
 
 ```bash

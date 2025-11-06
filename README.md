@@ -308,6 +308,70 @@ You should see the help menu with all available options.
 
 ---
 
+## ❓ Getting Help
+
+### View All Available Options
+
+```bash
+python new.py --help
+```
+
+**This command displays:**
+
+```
+usage: new.py [-h] [--ip IP] [--stream-path STREAM_PATH]
+              [--video VIDEO] [--scale SCALE]
+              [--pedestrians] [--general-objects]
+
+Multi-Mode Object Detection System: Vehicle Priority Classification
+OR General Object Detection (80+ classes)
+
+options:
+  -h, --help            show this help message and exit
+
+  --ip IP               Camera IP address or full stream URL
+                        (supports ESP32-CAM, IP Webcam, DroidCam, RTSP, etc.)
+
+  --stream-path STREAM_PATH
+                        Stream path for ESP32-CAM (default: /stream)
+
+  --video VIDEO         Path to video file for offline processing
+
+  --scale SCALE         Processing scale factor (0.5-1.0, lower=faster, default=0.75)
+
+  --pedestrians         Enable pedestrian detection (detects people in the frame)
+
+  --general-objects     Enable general object detection mode
+                        (detects 80+ COCO classes instead of vehicle-only)
+
+Examples:
+  # VEHICLE MODE (default) - Detects vehicles with priority classification
+  python new.py --ip 192.168.1.50
+  python new.py --video traffic.mp4
+
+  # GENERAL OBJECT DETECTION MODE - Detects 80+ everyday objects
+  python new.py --video scene.mp4 --general-objects
+  python new.py --ip http://192.168.1.100:8080/video --general-objects
+
+  # WITH PEDESTRIAN DETECTION
+  python new.py --video traffic.mp4 --pedestrians
+
+  # Performance optimization
+  python new.py --video traffic.mp4 --scale 0.5  # Faster, lower quality
+  python new.py --video traffic.mp4 --scale 1.0  # Best quality, slower
+```
+
+**Available Options Explained:**
+
+-   **`--video FILE`** - Process a video file (MP4, AVI, MOV, etc.)
+-   **`--ip URL`** - Connect to IP camera or ESP32-CAM stream
+-   **`--general-objects`** - Enable general object detection (80+ classes)
+-   **`--pedestrians`** - Add pedestrian detection and counting
+-   **`--scale 0.5-1.0`** - Resolution scaling (0.5=fast, 1.0=quality)
+-   **`--stream-path PATH`** - Custom stream path for ESP32-CAM
+
+---
+
 ## 🚀 Quick Start
 
 > 📌 **Detection Modes**:

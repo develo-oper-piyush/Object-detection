@@ -140,10 +140,20 @@ class ESP32CamDetector:
                 raise RuntimeError(f"Failed to open video file at {self.video_path}")
         else:
             if not self.stream_url:
-                raise RuntimeError("No ESP32 IP or video file provided")
+                raise RuntimeError("No stream URL or video file provided")
+            
+            print(f"Connecting to stream: {self.stream_url}")
+            
+            # Try to open the stream
             self.cap = cv2.VideoCapture(self.stream_url)
+            
+            # For IP camera apps, may need to set buffer size
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            
             if not self.cap.isOpened():
                 raise RuntimeError(f"Failed to open stream at {self.stream_url}")
+            
+            print("Successfully connected to IP camera stream!")
 
     def classify_vehicle_priority(self, label):
         """Classify vehicle by priority based on its type"""
@@ -550,16 +560,48 @@ def start_tkinter_ui(detector: ESP32CamDetector):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="ESP32-CAM vehicle detection and priority classification client")
-    parser.add_argument("--ip", help="ESP32-CAM IP address or full stream URL (e.g. 192.168.1.50 or http://192.168.1.50/stream)")
-    parser.add_argument("--stream-path", default="/stream", help="stream path used by ESP sketch (default /stream)")
+    parser = argparse.ArgumentParser(
+        description="Vehicle detection and priority classification from camera stream or video",
+        epilog="""
+Examples:
+  # ESP32-CAM stream
+  python new.py --ip 192.168.1.50
+  python new.py --ip http://192.168.1.50/stream
+  
+  # IP Webcam app (Android)
+  python new.py --ip http://192.168.1.100:8080/video
+  
+  # DroidCam
+  python new.py --ip http://192.168.1.100:4747/video
+  
+  # Generic IP camera (MJPEG)
+  python new.py --ip http://192.168.1.100:8081/stream
+  
+  # RTSP camera
+  python new.py --ip rtsp://192.168.1.100:554/stream
+  
+  # Video file
+  python new.py --video traffic.mp4
+  python new.py --video traffic.mp4 --scale 0.5
+        """,
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("--ip", help="Camera IP address or full stream URL (supports ESP32-CAM, IP Webcam, DroidCam, RTSP, etc.)")
+    parser.add_argument("--stream-path", default="/stream", help="Stream path for ESP32-CAM (default: /stream, not used for full URLs)")
     parser.add_argument("--video", help="Path to video file for offline processing (alternative to --ip)")
     parser.add_argument("--scale", type=float, default=0.75, help="Processing scale factor (0.5-1.0, lower=faster, default=0.75)")
     args = parser.parse_args()
 
     # Validate input
     if not args.ip and not args.video:
-        print("Error: Must provide either --ip for ESP32-CAM stream or --video for video file")
+        print("Error: Must provide either --ip for camera stream or --video for video file")
+        print("\nCommon IP Camera Apps:")
+        print("  IP Webcam (Android):  http://YOUR_PHONE_IP:8080/video")
+        print("  DroidCam:             http://YOUR_PHONE_IP:4747/video")
+        print("  ESP32-CAM:            http://YOUR_ESP32_IP/stream")
+        print("  Generic MJPEG:        http://YOUR_CAMERA_IP:PORT/stream")
+        print("  RTSP Camera:          rtsp://YOUR_CAMERA_IP:554/stream")
+        print("\nRun 'python new.py --help' for more examples")
         parser.print_help()
         sys.exit(1)
     
